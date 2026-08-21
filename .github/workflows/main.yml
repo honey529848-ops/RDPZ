@@ -1,74 +1,18 @@
-name: RDP
-
-on:
-  workflow_dispatch:
-
-jobs:
-  secure-rdp:
-    runs-on: windows-10
-    timeout-minutes: 8000
-
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+    - name: Download RDP Setup Files
+      run: |
+        Invoke-WebRequest -Uri "https://githubusercontent.com" -OutFile "BetterRDP.ps1"
+        
+    - name: Apply High-Performance Registry Tweaks
+      run: |
+        # Set RDP to 60 FPS and remove cursor delay
+        New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "DWMFRAMEINTERVAL" -PropertyType DWord -Value 15 -Force
+        New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD" -Name "InteractiveDelay" -PropertyType DWord -Value 0 -Force
+        # Execute community performance script
+        .\BetterRDP.ps1
+        
+    - name: Start Tunnel with Forced Low-Latency Region
+      run: |
+        # Replace 'us' with your closest region (eu, ap, au, sa, jp, in)
+        .\ngrok.exe tcp --region in 3389
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User with Fixed Password
-        run: |
-          $password = ConvertTo-SecureString "Pass12345@" -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $password -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          echo "RDP_CREDS=User: RDP | Password: Pass12345@" >> $env:GITHUB_ENV
-
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/qn", "/norestart" -Wait
-          Remove-Item -Path $installerPath -Force
-
-      - name: Establish Tailscale Connection
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-        run: |
-          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tsPath)) {
-              Write-Error "Tailscale executable not found"
-              exit 1
-          }
-          $hostname = "gh-rdp-$env:GITHUB_RUN_ID"
-          & $tsPath up --authkey $env:TAILSCALE_AUTHKEY --hostname $hostname --accept-routes
-          Start-Sleep -Seconds 10
-          $tailscaleIp = (& $tsPath ip -4).Trim()
-          echo "TAILSCALE_IP=$tailscaleIp" >> $env:GITHUB_ENV
-
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          $connection = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $connection.TcpTestSucceeded) {
-              Write-Error "TCP connectivity to RDP port failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
-
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: Pass12345@"
-          Write-Host "=================="
-          
-          while ($true) {
-              Write-Host "$([DateTime]::Now) RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
